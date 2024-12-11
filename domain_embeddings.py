@@ -8,6 +8,7 @@ from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
+from safetensors.torch import load_file
 import preprocess as pp
 
 # Create a custom Dataset for Triplet Loss
@@ -91,10 +92,10 @@ class DataCollatorForTripletLoss:
 
 # Define the Siamese network model with Triplet Loss
 class SiameseModel(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_name=None):
         super().__init__()
         self.loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = AutoModel.from_pretrained(model_name) if model_name else None
 
     def mean_pooling(self, token_embeddings, attention_mask):
         # Mean Pooling - Take attention mask into account
@@ -130,6 +131,14 @@ class SiameseModel(nn.Module):
         loss = self.loss_fn(anchor_embedding, positive_embedding, negative_embedding)
         return {'loss': loss}
 
+    
+    def generate(self, texts):
+        inputs = tokenizer(texts, return_tensors='pt').to(device)
+        outputs = self.encoder(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
+        embeddings = F.normalize(self.mean_pooling(outputs.last_hidden_state, inputs['attention_mask'])).detach().cpu().numpy()
+        return embeddings
+
+
 
 def prepare_dataset():    
     chunks, questions = [], []
@@ -143,54 +152,70 @@ def prepare_dataset():
     return (chunks, questions)
 
 
+def get_embedding(text):    
+    #path = "./model_te mp/checkpoints/12_13.843_model.pt"
+    #checkpoint = torch.load(path, map_location='cpu')
+    #model.load_state_dict(checkpoint['model_state_dict'])       
+    with torch.no_grad():
+        embedding = siamese_model.generate([text])[0]
+        print(text, embedding)
+    return embedding
+    
+    
 # =================================================
 
-# Initialize tokenizer and models
-random.seed(42)
-torch.manual_seed(42)
 model_name = 'Alibaba-NLP/gte-Qwen2-1.5B-instruct'
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-siamese_model = SiameseModel(model_name=model_name)
 
-# Create the dataset
-"""
-chunks = [
-    "This is the text of chunk1. It is about topic A.",
-    "Here is chunk2. It discusses topic B.",
-    "Text of chunk3 goes here. Topic C is covered.",
-]
+if 1==1: #evaluate trained model    
+    device = torch.device("cuda:0")
+    state_dict = load_file("./model_temp/checkpoint-6600/model.safetensors")
+    siamese_model = SiameseModel(model_name=None)
+    siamese_model.load_state_dict(state_dict)
+    siamese_model.cuda()
+    siamese_model.eval()
+else: #train
+    siamese_model = SiameseModel(model_name=model_name)
 
-questions = [
-    ["What is topic A?", "Explain topic A in detail."],
-    ["Can you tell me about topic B?", "What does chunk2 discuss?"],
-    ["Give me information on topic C.", "Describe the subject of chunk3."],
-]
-"""
-chunks, questions = prepare_dataset()
-train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
-print( len(train_dataset.samples) )
+    # Create the dataset
+    """
+    chunks = [
+        "This is the text of chunk1. It is about topic A.",
+        "Here is chunk2. It discusses topic B.",
+        "Text of chunk3 goes here. Topic C is covered.",
+    ]
+
+    questions = [
+        ["What is topic A?", "Explain topic A in detail."],
+        ["Can you tell me about topic B?", "What does chunk2 discuss?"],
+        ["Give me information on topic C.", "Describe the subject of chunk3."],
+    ]
+    """
+    chunks, questions = prepare_dataset()
+    train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
+    print( len(train_dataset.samples) )
 
 
-# Start training
-data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
+    # Start training
+    data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
 
-training_args = TrainingArguments(
-    output_dir='./model_temp',
-    num_train_epochs=30,
-    per_device_train_batch_size=1,
-    learning_rate=2e-5,
-    weight_decay=0.01,
-    logging_steps=20,
-    save_steps=200,
-    save_total_limit=2,
-    remove_unused_columns=False
-)
+    training_args = TrainingArguments(
+        output_dir='./model_temp',
+        num_train_epochs=30,
+        per_device_train_batch_size=1,
+        learning_rate=2e-5,
+        weight_decay=0.01,
+        logging_steps=20,
+        save_steps=200,
+        save_total_limit=2,
+        remove_unused_columns=False
+    )
 
-trainer = Trainer(
-    model=siamese_model,
-    data_collator=data_collator,
-    args=training_args,
-    train_dataset=train_dataset,
-)
+    trainer = Trainer(
+        model=siamese_model,
+        data_collator=data_collator,
+        args=training_args,
+        train_dataset=train_dataset,
+    )
 
-trainer.train()
+    trainer.train()
