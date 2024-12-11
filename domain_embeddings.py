@@ -4,9 +4,10 @@ import torch
 from torch.utils.data import Dataset
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, Tuple
-from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
+from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
 import preprocess as pp
 
 # Create a custom Dataset for Triplet Loss
@@ -102,39 +103,32 @@ class SiameseModel(nn.Module):
         sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
         return sum_embeddings / sum_mask
 
-    def forward(self, **inputs):        
-        # Encode anchor
-        outputs_anchor = self.encoder(
-            input_ids=inputs['input_ids_anchor'],
-            attention_mask=inputs['attention_mask_anchor'],
-        )
-        anchor_embedding = self.mean_pooling(
-            outputs_anchor.last_hidden_state,
-            inputs['attention_mask_anchor'],
-        )
+    def last_token_pool(self, last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+        left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+        if left_padding:
+            return last_hidden_states[:, -1]
+        else:
+            sequence_lengths = attention_mask.sum(dim=1) - 1
+            batch_size = last_hidden_states.shape[0]
+            return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
+
+    def forward(self, **inputs):
+        # Encode anchor
+        outputs_anchor = self.encoder(input_ids=inputs['input_ids_anchor'], attention_mask=inputs['attention_mask_anchor'])
+        anchor_embedding = F.normalize(self.mean_pooling(outputs_anchor.last_hidden_state, inputs['attention_mask_anchor']))
+        #print(anchor_embedding.shape, inputs["attention_mask_anchor"])
+        
         # Encode positive
-        outputs_positive = self.encoder(
-            input_ids=inputs['input_ids_positive'],
-            attention_mask=inputs['attention_mask_positive'],
-        )
-        positive_embedding = self.mean_pooling(
-            outputs_positive.last_hidden_state,
-            inputs['attention_mask_positive'],
-        )
+        outputs_positive = self.encoder(input_ids=inputs['input_ids_positive'], attention_mask=inputs['attention_mask_positive'])
+        positive_embedding = F.normalize(self.mean_pooling(outputs_positive.last_hidden_state,inputs['attention_mask_positive']))
 
         # Encode negative
-        outputs_negative = self.encoder(
-            input_ids=inputs['input_ids_negative'],
-            attention_mask=inputs['attention_mask_negative'],
-        )
-        negative_embedding = self.mean_pooling(
-            outputs_negative.last_hidden_state,
-            inputs['attention_mask_negative'],
-        )
+        outputs_negative = self.encoder(input_ids=inputs['input_ids_negative'], attention_mask=inputs['attention_mask_negative'])
+        negative_embedding = F.normalize(self.mean_pooling(outputs_negative.last_hidden_state, inputs['attention_mask_negative']))
 
         loss = self.loss_fn(anchor_embedding, positive_embedding, negative_embedding)
-        return {'loss': loss}        
+        return {'loss': loss}
 
 
 def prepare_dataset():    
@@ -145,7 +139,7 @@ def prepare_dataset():
         for chunk in a:
             text = "#"+chunk["keywords"]+"\n"+chunk["content"]
             chunks.append(text)
-            questions.append(chunk["questions_list"])
+            questions.append( ["Q: "+question for question in chunk["questions_list"]] )
     return (chunks, questions)
 
 
@@ -186,8 +180,9 @@ training_args = TrainingArguments(
     per_device_train_batch_size=1,
     learning_rate=2e-5,
     weight_decay=0.01,
-    logging_steps=1,
-    save_steps=3,
+    logging_steps=20,
+    save_steps=200,
+    save_total_limit=2,
     remove_unused_columns=False
 )
 
