@@ -3,6 +3,7 @@ import random
 import torch
 from torch.utils.data import Dataset
 from dataclasses import dataclass, field
+from scipy import spatial
 from typing import Any, Dict, List, Optional, Union, Tuple
 from torch import Tensor
 import torch.nn as nn
@@ -11,7 +12,7 @@ from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
 from safetensors.torch import load_file
 import preprocess as pp
 
-# Create a custom Dataset for Triplet Loss
+#=======================================================
 class ChunkQuestionTripletDataset(Dataset):
     def __init__(self, chunks, questions, tokenizer, max_length=4000):
         self.tokenizer = tokenizer
@@ -20,16 +21,16 @@ class ChunkQuestionTripletDataset(Dataset):
         num_chunks = len(chunks)
         for idx, chunk in enumerate(chunks):
             anchor = chunk
-            positive_questions = questions[idx]
-            # For each positive question, create a triplet
-            for positive in positive_questions:
-                # Sample a negative question from other chunks
+            positive_questions = questions[idx]            
+            for positive in positive_questions:                
                 negative_indices = list(range(num_chunks))
                 negative_indices.remove(idx)
-                negative_idx = random.choice(negative_indices)
-                negative_questions = questions[negative_idx]
-                negative = random.choice(negative_questions)
-                self.samples.append((anchor, positive, negative))
+                for _ in range(3): #for each positive, pair 3 negatives
+                    negative_idx = random.choice(negative_indices)
+                    negative_indices.remove(negative_idx)
+                    negative_questions = questions[negative_idx]
+                    negative = random.choice(negative_questions)
+                    self.samples.append((anchor, positive, negative))
 
     def __len__(self):
         return len(self.samples)
@@ -89,8 +90,7 @@ class DataCollatorForTripletLoss:
         return batch
 
 
-
-# Define the Siamese network model with Triplet Loss
+#=======================================================
 class SiameseModel(nn.Module):
     def __init__(self, model_name=None):
         super().__init__()
@@ -135,12 +135,20 @@ class SiameseModel(nn.Module):
     def generate(self, texts):
         inputs = tokenizer(texts, return_tensors='pt').to(device)
         outputs = self.encoder(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])
-        embeddings = F.normalize(self.mean_pooling(outputs.last_hidden_state, inputs['attention_mask'])).detach().cpu().numpy()
+        embeddings = F.normalize(self.last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])).detach().cpu().numpy()
         return embeddings
 
 
+#=======================================================
+def cosine_similarity(v1, v2):
+  return 1 - spatial.distance.cosine(v1, v2)
 
-def prepare_dataset():    
+def get_embedding(text):
+    with torch.no_grad():
+        embedding = siamese_model.generate([text])[0]
+    return embedding
+
+def prepare_dataset():  #questions - [[Q1_1,Q1_2,...]]
     chunks, questions = [], []
     d = json.loads(pp.file_get_contents("./temp/chunks3.json"))
     for key in d:
@@ -151,29 +159,32 @@ def prepare_dataset():
             questions.append( ["Q: "+question for question in chunk["questions_list"]] )
     return (chunks, questions)
 
+def test():
+    chunks, questions = prepare_dataset()
+    n, chunks_emb = len(chunks), []
+    for i in range(n): chunks_emb.append( get_embedding(chunks[i]) )
+    for i in range(n):
+        for question in questions[i]:
+            qe, a = get_embedding(question), []
+            for j in range(n): a.append((j, cosine_similarity(qe, chunks_emb[j])))
+            a = sorted(a, key=lambda x: x[1], reverse=True)
+            top = [x[0] for x in a[:5]]
+            print(i, "--", top, ("YES" if i in top else "NO") )
 
-def get_embedding(text):    
-    #path = "./model_te mp/checkpoints/12_13.843_model.pt"
-    #checkpoint = torch.load(path, map_location='cpu')
-    #model.load_state_dict(checkpoint['model_state_dict'])       
-    with torch.no_grad():
-        embedding = siamese_model.generate([text])[0]
-        print(text, embedding)
-    return embedding
-    
     
 # =================================================
 
 model_name = 'Alibaba-NLP/gte-Qwen2-1.5B-instruct'
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-if 1==1: #evaluate trained model    
+if 1==2: #evaluate trained model
     device = torch.device("cuda:0")
-    state_dict = load_file("./model_temp/checkpoint-6600/model.safetensors")
-    siamese_model = SiameseModel(model_name=None)
-    siamese_model.load_state_dict(state_dict)
+    siamese_model = SiameseModel(model_name=model_name)
+    #state_dict = load_file("./model_temp/checkpoint-6600/model.safetensors")
+    #siamese_model.load_state_dict(state_dict)
     siamese_model.cuda()
     siamese_model.eval()
+    test()
 else: #train
     siamese_model = SiameseModel(model_name=model_name)
 
@@ -194,7 +205,6 @@ else: #train
     chunks, questions = prepare_dataset()
     train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
     print( len(train_dataset.samples) )
-
 
     # Start training
     data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
@@ -219,3 +229,4 @@ else: #train
     )
 
     trainer.train()
+    
