@@ -177,11 +177,11 @@ def test():
 model_name = 'Alibaba-NLP/gte-Qwen2-1.5B-instruct'
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-if 1==2: #evaluate trained model
+if 1==1: #evaluate trained model
     device = torch.device("cuda:0")
     siamese_model = SiameseModel(model_name=model_name)
-    #state_dict = load_file("./model_temp/checkpoint-6600/model.safetensors")
-    #siamese_model.load_state_dict(state_dict)
+    state_dict = load_file("./model_temp/checkpoint-12500/model.safetensors")
+    siamese_model.load_state_dict(state_dict)
     siamese_model.cuda()
     siamese_model.eval()
     test()
@@ -189,35 +189,24 @@ else: #train
     siamese_model = SiameseModel(model_name=model_name)
 
     # Create the dataset
-    """
-    chunks = [
-        "This is the text of chunk1. It is about topic A.",
-        "Here is chunk2. It discusses topic B.",
-        "Text of chunk3 goes here. Topic C is covered.",
-    ]
-
-    questions = [
-        ["What is topic A?", "Explain topic A in detail."],
-        ["Can you tell me about topic B?", "What does chunk2 discuss?"],
-        ["Give me information on topic C.", "Describe the subject of chunk3."],
-    ]
-    """
     chunks, questions = prepare_dataset()
     train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
     print( len(train_dataset.samples) )
 
     # Start training
     data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
-
+    
     training_args = TrainingArguments(
         output_dir='./model_temp',
         num_train_epochs=30,
         per_device_train_batch_size=1,
-        learning_rate=2e-5,
+        gradient_accumulation_steps=4,
+        gradient_checkpointing=True, #default False - slows down the training
+        learning_rate=1e-5,
         weight_decay=0.01,
         logging_steps=20,
-        save_steps=200,
-        save_total_limit=2,
+        save_steps=500,
+        save_total_limit=1,
         remove_unused_columns=False
     )
 
