@@ -1,3 +1,4 @@
+#sources: PC4 - asr_p3.8
 import json
 import random
 import torch
@@ -18,14 +19,16 @@ class ChunkQuestionTripletDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.samples = []
+        self.test_samples = []
         num_chunks = len(chunks)
         for idx, chunk in enumerate(chunks):
             anchor = chunk
-            positive_questions = questions[idx]            
-            for positive in positive_questions:                
+            positive_questions = questions[idx]
+            self.test_samples.append((positive_questions[0], idx)) #each first positive_question goes to test set            
+            for positive in positive_questions[1:]:
                 negative_indices = list(range(num_chunks))
                 negative_indices.remove(idx)
-                for _ in range(3): #for each positive, pair 3 negatives
+                for _ in range(5): #for each positive, pair 3 negatives
                     negative_idx = random.choice(negative_indices)
                     negative_indices.remove(negative_idx)
                     negative_questions = questions[negative_idx]
@@ -139,6 +142,11 @@ class SiameseModel(nn.Module):
         return embeddings
 
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        if hasattr(self.encoder, "gradient_checkpointing_enable"):
+            self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
+
 #=======================================================
 def cosine_similarity(v1, v2):
   return 1 - spatial.distance.cosine(v1, v2)
@@ -161,15 +169,18 @@ def prepare_dataset():  #questions - [[Q1_1,Q1_2,...]]
 
 def test():
     chunks, questions = prepare_dataset()
-    n, chunks_emb = len(chunks), []
+    dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
+
+    n, chunks_emb = len(chunks), []    
     for i in range(n): chunks_emb.append( get_embedding(chunks[i]) )
+
     for i in range(n):
-        for question in questions[i]:
-            qe, a = get_embedding(question), []
-            for j in range(n): a.append((j, cosine_similarity(qe, chunks_emb[j])))
-            a = sorted(a, key=lambda x: x[1], reverse=True)
-            top = [x[0] for x in a[:5]]
-            print(i, "--", top, ("YES" if i in top else "NO") )
+        question, idx = dataset.test_samples[i]
+        qe, a = get_embedding(question), []
+        for j in range(n): a.append((j, cosine_similarity(qe, chunks_emb[j])))
+        a = sorted(a, key=lambda x: x[1], reverse=True)
+        top = [x[0] for x in a[:10]]
+        print(idx, "--", top, ("YES" if idx in top else "NO") )
 
     
 # =================================================
@@ -180,7 +191,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 if 1==1: #evaluate trained model
     device = torch.device("cuda:0")
     siamese_model = SiameseModel(model_name=model_name)
-    state_dict = load_file("./model_temp/checkpoint-12500/model.safetensors")
+    state_dict = load_file("./model_temp/checkpoint-8160/model.safetensors")
     siamese_model.load_state_dict(state_dict)
     siamese_model.cuda()
     siamese_model.eval()
@@ -191,7 +202,7 @@ else: #train
     # Create the dataset
     chunks, questions = prepare_dataset()
     train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
-    print( len(train_dataset.samples) )
+    print("train, test len:", len(train_dataset.samples), len(train_dataset.test_samples))
 
     # Start training
     data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
