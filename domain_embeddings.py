@@ -163,12 +163,12 @@ class JinaDataCollator:
 class JinaModel(nn.Module):
     def __init__(self, model_name=None):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True)
 
-    def forward(self, **inputs):
-        anchor_embedding = self.encoder.encode(inputs['anchor_texts'], task="retrieval.passage")
-        positive_embedding = self.encoder.encode(inputs['positive_texts'], task="retrieval.query")
-        negative_embedding = self.encoder.encode(inputs['negative_texts'], task="retrieval.query")
+    def forward(self, **inputs): #modeling_xlm_roberta comment @torch.inference_mode() on encode function
+        anchor_embedding = self.encoder.encode(inputs['anchor_texts'], task="retrieval.passage", convert_to_tensor=True)
+        positive_embedding = self.encoder.encode(inputs['positive_texts'], task="retrieval.query", convert_to_tensor=True)
+        negative_embedding = self.encoder.encode(inputs['negative_texts'], task="retrieval.query", convert_to_tensor=True)
         loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
         return {'loss': loss}
 
@@ -240,7 +240,7 @@ else: #=== TRAIN ===
     training_args = TrainingArguments(
         output_dir='./model_temp',
         num_train_epochs=30,
-        per_device_train_batch_size=16,
+        per_device_train_batch_size=1, #16,
         gradient_accumulation_steps=1, #4
         #gradient_checkpointing=True, #default False - slows down the training        
         learning_rate=1e-5,
@@ -250,7 +250,8 @@ else: #=== TRAIN ===
         #evaluation_strategy="steps",
         #eval_steps=20,
         weight_decay=0.01,
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        report_to="tensorboard",  # Enable TensorBoard
     )
 
     trainer = Trainer(
