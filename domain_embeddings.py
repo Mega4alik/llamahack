@@ -163,27 +163,48 @@ class JinaDataCollator:
 class JinaModel(nn.Module):
     def __init__(self, model_name=None):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True, use_flash_attn=True)
+        #self.encoder.config.use_flash_attn = False
+        #self.encoder.roberta.config.use_flash_attn = False
+        for param in self.encoder.roberta.parameters():
+            param.requires_grad = True
+
+
+    def encode(self, input_ids, attention_mask):
+        #with torch.enable_grad(): embeddings = self.encoder.encode(texts, task="retrieval.passage", convert_to_tensor=True)
+        with torch.enable_grad():
+            #encoded_input = self.encoder.roberta.tokenizer(texts, return_tensors="pt") #.to(device)
+            token_embs = self.encoder.roberta.forward(input_ids) 
+            embeddings = self.encoder.roberta.mean_pooling(token_embs.last_hidden_state, attention_mask)
+            embeddings = F.normalize(embeddings, p=2, dim=0)                
+        return embeddings
 
     def forward(self, **inputs): #modeling_xlm_roberta comment @torch.inference_mode() on encode function
-        anchor_embedding = self.encoder.encode(inputs['anchor_texts'], task="retrieval.passage", convert_to_tensor=True)
-        positive_embedding = self.encoder.encode(inputs['positive_texts'], task="retrieval.query", convert_to_tensor=True)
-        negative_embedding = self.encoder.encode(inputs['negative_texts'], task="retrieval.query", convert_to_tensor=True)
+        anchor_embedding = self.encode(inputs['input_ids_anchor'], inputs['attention_mask_anchor']) 
+        positive_embedding = self.encode(inputs['input_ids_positive'], inputs['attention_mask_positive'])
+        negative_embedding = self.encode(inputs['input_ids_negative'], inputs['attention_mask_negative'])
         loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
         return {'loss': loss}
 
-    def generate(self, texts, task='retrieval.query'):
-        embedding = self.encoder.encode(texts, task=task)
-        return embedding
+    @torch.inference_mode()
+    def generate(self, texts, task):
+        encoded_input = tokenizer(texts, return_tensors="pt").to(device)
+        embeddings = self.encode(encoded_input['input_ids'], encoded_input['attention_mask']).detach().cpu().numpy()
+        #embeddings = self.encoder.encode(texts, task=task)
+        return embeddings
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        if hasattr(self.encoder, "gradient_checkpointing_enable"):
+            self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
 
 #=======================================================
 
 def cosine_similarity(v1, v2):
   return 1 - spatial.distance.cosine(v1, v2)
 
-def get_embedding(text):
-    with torch.no_grad():
-        embedding = siamese_model.generate([text])[0]
+def get_embedding(text, task='retrieval.query'):
+    embedding = siamese_model.generate([text], task)[0]
     return embedding
 
 def prepare_dataset():  #questions - [[Q1_1,Q1_2,...]]
@@ -201,8 +222,8 @@ def test():
     chunks, questions = prepare_dataset()
     dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
 
-    n, chunks_emb = len(chunks), []    
-    for i in range(n): chunks_emb.append( get_embedding(chunks[i]) )
+    n, chunks_emb, yes_count = len(chunks), [], 0
+    for i in range(n): chunks_emb.append( get_embedding(chunks[i], task='retrieval.passage') )
 
     for i in range(n):
         question, idx = dataset.test_samples[i]
@@ -210,18 +231,19 @@ def test():
         for j in range(n): a.append((j, cosine_similarity(qe, chunks_emb[j])))
         a = sorted(a, key=lambda x: x[1], reverse=True)
         top = [x[0] for x in a[:10]]
-        print(idx, "--", top, ("YES" if idx in top else "NO") )
-
+        if idx in top: yes_count+=1        
+        print(idx, "--", top, ("YES" if idx in top else "NO") )        
+    print(f"YES: {yes_count}, NO: {n-yes_count}")
     
 # =================================================
 
 model_name = "jinaai/jina-embeddings-v3"  #"Alibaba-NLP/gte-Qwen2-1.5B-instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-if 1==2: #=== Evaluate trained model ===
+if 1==1: #=== Evaluate trained model ===
     device = torch.device("cuda:0")
-    siamese_model = SiameseModel(model_name=model_name)
-    state_dict = load_file("./model_temp/checkpoint-8160/model.safetensors")
+    siamese_model = JinaModel(model_name=model_name)
+    state_dict = load_file("./models/domain_emb_jina1/checkpoint-8160/model.safetensors")
     siamese_model.load_state_dict(state_dict)
     siamese_model.cuda()
     siamese_model.eval()
@@ -234,14 +256,14 @@ else: #=== TRAIN ===
 
     # Start training
     siamese_model = JinaModel(model_name=model_name) #SiameseModel     
-    data_collator = JinaDataCollator() #DataCollatorForTripletLoss(tokenizer=tokenizer)
+    data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer) #JinaDataCollator()
     loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
 
     training_args = TrainingArguments(
         output_dir='./model_temp',
         num_train_epochs=30,
         per_device_train_batch_size=1, #16,
-        gradient_accumulation_steps=1, #4
+        gradient_accumulation_steps=4,
         #gradient_checkpointing=True, #default False - slows down the training        
         learning_rate=1e-5,
         logging_steps=20,
