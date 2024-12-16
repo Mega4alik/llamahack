@@ -13,6 +13,7 @@ from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
 from safetensors.torch import load_file
 import preprocess as pp
 
+
 #=======================================================
 class ChunkQuestionTripletDataset(Dataset):
     def __init__(self, chunks, questions, tokenizer, max_length=4000):
@@ -47,6 +48,7 @@ class ChunkQuestionTripletDataset(Dataset):
         }        
         return x
 
+#=======================================================
 
 class DataCollatorForTripletLoss:
     def __init__(self, tokenizer, max_length=4000):
@@ -93,11 +95,9 @@ class DataCollatorForTripletLoss:
         return batch
 
 
-#=======================================================
 class SiameseModel(nn.Module):
     def __init__(self, model_name=None):
         super().__init__()
-        self.loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
         self.encoder = AutoModel.from_pretrained(model_name) if model_name else None
 
     def mean_pooling(self, token_embeddings, attention_mask):
@@ -116,12 +116,10 @@ class SiameseModel(nn.Module):
             batch_size = last_hidden_states.shape[0]
             return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
-
     def forward(self, **inputs):
         # Encode anchor
         outputs_anchor = self.encoder(input_ids=inputs['input_ids_anchor'], attention_mask=inputs['attention_mask_anchor'])
-        anchor_embedding = F.normalize(self.mean_pooling(outputs_anchor.last_hidden_state, inputs['attention_mask_anchor']))
-        #print(anchor_embedding.shape, inputs["attention_mask_anchor"])
+        anchor_embedding = F.normalize(self.mean_pooling(outputs_anchor.last_hidden_state, inputs['attention_mask_anchor']))        
         
         # Encode positive
         outputs_positive = self.encoder(input_ids=inputs['input_ids_positive'], attention_mask=inputs['attention_mask_positive'])
@@ -131,9 +129,8 @@ class SiameseModel(nn.Module):
         outputs_negative = self.encoder(input_ids=inputs['input_ids_negative'], attention_mask=inputs['attention_mask_negative'])
         negative_embedding = F.normalize(self.mean_pooling(outputs_negative.last_hidden_state, inputs['attention_mask_negative']))
 
-        loss = self.loss_fn(anchor_embedding, positive_embedding, negative_embedding)
+        loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
         return {'loss': loss}
-
     
     def generate(self, texts):
         inputs = tokenizer(texts, return_tensors='pt').to(device)
@@ -141,13 +138,46 @@ class SiameseModel(nn.Module):
         embeddings = F.normalize(self.last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])).detach().cpu().numpy()
         return embeddings
 
-
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
         if hasattr(self.encoder, "gradient_checkpointing_enable"):
             self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 
 
 #=======================================================
+class JinaDataCollator:
+    def __init__(self):
+        pass        
+
+    def __call__(self, features):
+        anchor_texts = [f['anchor_text'] for f in features]
+        positive_texts = [f['positive_text'] for f in features]
+        negative_texts = [f['negative_text'] for f in features]
+        batch = {
+            'anchor_texts': anchor_texts,
+            'positive_texts': positive_texts,
+            'negative_texts': negative_texts
+        }
+        return batch
+
+
+class JinaModel(nn.Module):
+    def __init__(self, model_name=None):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(model_name)
+
+    def forward(self, **inputs):
+        anchor_embedding = self.encoder.encode(inputs['anchor_texts'], task="retrieval.passage")
+        positive_embedding = self.encoder.encode(inputs['positive_texts'], task="retrieval.query")
+        negative_embedding = self.encoder.encode(inputs['negative_texts'], task="retrieval.query")
+        loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
+        return {'loss': loss}
+
+    def generate(self, texts, task='retrieval.query'):
+        embedding = self.encoder.encode(texts, task=task)
+        return embedding
+
+#=======================================================
+
 def cosine_similarity(v1, v2):
   return 1 - spatial.distance.cosine(v1, v2)
 
@@ -185,10 +215,10 @@ def test():
     
 # =================================================
 
-model_name = 'Alibaba-NLP/gte-Qwen2-1.5B-instruct'
+model_name = "jinaai/jina-embeddings-v3"  #"Alibaba-NLP/gte-Qwen2-1.5B-instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-if 1==1: #evaluate trained model
+if 1==2: #=== Evaluate trained model ===
     device = torch.device("cuda:0")
     siamese_model = SiameseModel(model_name=model_name)
     state_dict = load_file("./model_temp/checkpoint-8160/model.safetensors")
@@ -196,28 +226,30 @@ if 1==1: #evaluate trained model
     siamese_model.cuda()
     siamese_model.eval()
     test()
-else: #train
-    siamese_model = SiameseModel(model_name=model_name)
-
+else: #=== TRAIN ===
     # Create the dataset
     chunks, questions = prepare_dataset()
     train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
     print("train, test len:", len(train_dataset.samples), len(train_dataset.test_samples))
 
     # Start training
-    data_collator = DataCollatorForTripletLoss(tokenizer=tokenizer)
-    
+    siamese_model = JinaModel(model_name=model_name) #SiameseModel     
+    data_collator = JinaDataCollator() #DataCollatorForTripletLoss(tokenizer=tokenizer)
+    loss_fn = nn.TripletMarginLoss(margin=1.0, p=2)
+
     training_args = TrainingArguments(
         output_dir='./model_temp',
         num_train_epochs=30,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        gradient_checkpointing=True, #default False - slows down the training
+        per_device_train_batch_size=16,
+        gradient_accumulation_steps=1, #4
+        #gradient_checkpointing=True, #default False - slows down the training        
         learning_rate=1e-5,
-        weight_decay=0.01,
         logging_steps=20,
         save_steps=500,
         save_total_limit=1,
+        #evaluation_strategy="steps",
+        #eval_steps=20,
+        weight_decay=0.01,
         remove_unused_columns=False
     )
 
