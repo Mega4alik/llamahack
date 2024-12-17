@@ -8,11 +8,18 @@ import io
 import re
 import json
 import numpy as np
-import scipy.io.wavfile as wavfile
-import soundfile as sf
-import librosa
+from scipy import spatial
+from openai import OpenAI
+from config import OPENAI_API_KEY
 
+class myOpenAI():
+    def __init__(self):    
+        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.embedding_name = "text-embedding-3-large"
 
+    def get_embedding(self, text):
+       #text = text.replace("\n", " ") #??
+       return self.client.embeddings.create(input = [text], model=self.embedding_name).data[0].embedding
 
 
 def file_put_contents(filename, st):
@@ -27,12 +34,9 @@ def file_get_contents(name):
 def timediff(time1, time2):
     return int( (time2 - time1) * 1000 ) #ms
 
-def softmax(x):
-    """Compute softmax values for each sets of scores in x."""
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum(axis=0) # only difference
-
 def remove_multiple_spaces(text):
     for _ in range(2): text = text.replace("  ", " ")    
     return text
 
+def cosine_similarity(v1, v2):
+  return 1 - spatial.distance.cosine(v1, v2)

@@ -1,5 +1,7 @@
 __pycache__
+config.py
 models/
 model_temp
 temp
 transformers1
+logs

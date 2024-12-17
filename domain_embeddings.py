@@ -1,21 +1,21 @@
-#sources: PC4 - asr_p3.8
+#sources: PC4 - asr_p3.8, US1 - asr3.12
 import json
 import random
 import torch
 from torch.utils.data import Dataset
 from dataclasses import dataclass, field
-from scipy import spatial
-from typing import Any, Dict, List, Optional, Union, Tuple
+#from typing import Any, Dict, List, Optional, Union, Tuple
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel, Trainer, TrainingArguments
 from safetensors.torch import load_file
-import preprocess as pp
+
+from utils import file_get_contents, cosine_similarity, myOpenAI
 
 
 #=======================================================
-class ChunkQuestionTripletDataset(Dataset):
+class ChunkQuestionTripletDataset(Dataset):    
     def __init__(self, chunks, questions, tokenizer, max_length=4000):
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -24,8 +24,9 @@ class ChunkQuestionTripletDataset(Dataset):
         num_chunks = len(chunks)
         for idx, chunk in enumerate(chunks):
             anchor = chunk
-            positive_questions = questions[idx]
-            self.test_samples.append((positive_questions[0], idx)) #each first positive_question goes to test set            
+            positive_questions = questions[idx]                                
+            self.test_samples.append((anchor, positive_questions[0], questions[self.randint_excluding_idx(num_chunks-1, idx)][0])) #each first positive_question goes to test set
+
             for positive in positive_questions[1:]:
                 negative_indices = list(range(num_chunks))
                 negative_indices.remove(idx)
@@ -47,6 +48,15 @@ class ChunkQuestionTripletDataset(Dataset):
             'negative_text': negative_text,
         }        
         return x
+
+    def randint_excluding_idx(self, n, idx):        
+        rand = random.randint(0, n - 1)
+        return rand if rand < idx else rand + 1
+
+
+class TestDataset(ChunkQuestionTripletDataset):
+    def __init__(self, test_samples):
+        self.samples = test_samples
 
 #=======================================================
 
@@ -184,7 +194,9 @@ class JinaModel(nn.Module):
         positive_embedding = self.encode(inputs['input_ids_positive'], inputs['attention_mask_positive'])
         negative_embedding = self.encode(inputs['input_ids_negative'], inputs['attention_mask_negative'])
         loss = loss_fn(anchor_embedding, positive_embedding, negative_embedding)
+        #if self.training:
         return {'loss': loss}
+        
 
     @torch.inference_mode()
     def generate(self, texts, task):
@@ -197,19 +209,34 @@ class JinaModel(nn.Module):
         if hasattr(self.encoder, "gradient_checkpointing_enable"):
             self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 
+#=======================================================
+
+class OwnTrainer(Trainer):
+    @torch.inference_mode()
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        outputs = []
+        for step, inputs in enumerate(eval_dataloader):
+            out = self.model.forward(**inputs) #**input_ids=<>, attention_mast=<>
+            x = out["loss"].item()
+            #print("===eval:", x, out)
+            outputs.append(x)
+
+        average = sum(outputs) / len(outputs)
+        r = {"eval_loss":average}
+        print(r)
+        return r
 
 #=======================================================
 
-def cosine_similarity(v1, v2):
-  return 1 - spatial.distance.cosine(v1, v2)
-
 def get_embedding(text, task='retrieval.query'):
     embedding = siamese_model.generate([text], task)[0]
+    #embedding = opai.get_embedding(text)
     return embedding
 
 def prepare_dataset():  #questions - [[Q1_1,Q1_2,...]]
     chunks, questions = [], []
-    d = json.loads(pp.file_get_contents("./temp/chunks3.json"))
+    d = json.loads(file_get_contents("./temp/chunks3.json"))
     for key in d:
         a = d[key]
         for chunk in a:
@@ -226,11 +253,12 @@ def test():
     for i in range(n): chunks_emb.append( get_embedding(chunks[i], task='retrieval.passage') )
 
     for i in range(n):
-        question, idx = dataset.test_samples[i]
+        _, question, _  = dataset.test_samples[i]
+        idx = i
         qe, a = get_embedding(question), []
         for j in range(n): a.append((j, cosine_similarity(qe, chunks_emb[j])))
         a = sorted(a, key=lambda x: x[1], reverse=True)
-        top = [x[0] for x in a[:10]]
+        top = [x[0] for x in a[:5]]
         if idx in top: yes_count+=1        
         print(idx, "--", top, ("YES" if idx in top else "NO") )        
     print(f"YES: {yes_count}, NO: {n-yes_count}")
@@ -243,15 +271,17 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 if 1==1: #=== Evaluate trained model ===
     device = torch.device("cuda:0")
     siamese_model = JinaModel(model_name=model_name)
-    state_dict = load_file("./models/domain_emb_jina1/checkpoint-8160/model.safetensors")
-    siamese_model.load_state_dict(state_dict)
+    #state_dict = load_file("./models/domain_emb_jina1/checkpoint-3500/model.safetensors")
+    #siamese_model.load_state_dict(state_dict)
     siamese_model.cuda()
     siamese_model.eval()
+    opai = myOpenAI()
     test()
 else: #=== TRAIN ===
     # Create the dataset
     chunks, questions = prepare_dataset()
     train_dataset = ChunkQuestionTripletDataset(chunks, questions, tokenizer)
+    test_dataset = TestDataset(train_dataset.test_samples)
     print("train, test len:", len(train_dataset.samples), len(train_dataset.test_samples))
 
     # Start training
@@ -263,24 +293,29 @@ else: #=== TRAIN ===
         output_dir='./model_temp',
         num_train_epochs=30,
         per_device_train_batch_size=1, #16,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=8,
         #gradient_checkpointing=True, #default False - slows down the training        
-        learning_rate=1e-5,
+        learning_rate=1e-6,
         logging_steps=20,
         save_steps=500,
-        save_total_limit=1,
-        #evaluation_strategy="steps",
-        #eval_steps=20,
-        weight_decay=0.01,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        evaluation_strategy="steps",
+        eval_steps=500,
+        per_device_eval_batch_size=1,
+        metric_for_best_model='eval_loss',
         remove_unused_columns=False,
-        report_to="tensorboard",  # Enable TensorBoard
+        logging_dir="./logs/",
+        report_to="tensorboard",
+        #weight_decay=0.01,
     )
 
-    trainer = Trainer(
+    trainer = OwnTrainer(
         model=siamese_model,
         data_collator=data_collator,
         args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=test_dataset    
     )
 
     trainer.train()
