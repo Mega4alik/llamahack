@@ -2,7 +2,6 @@
 import json
 import os
 import numpy as np
-import soundfile as sf
 import random
 import time
 import datetime
@@ -15,7 +14,7 @@ import torch
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import Trainer, TrainingArguments
-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaModel, LlamaForSequenceClassification #, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaModel, LlamaForSequenceClassification #, LlamaForCausalLM
 
 from utils import file_get_contents
 #from transformers1.models.llama.modeling_llama import LlamaForCausalLM
@@ -67,12 +66,32 @@ def data_to_prompt(data):
 
 
 def reward_preprocess(batch):	
-	return tokenizer(
+	messages = [
+	    {
+	        "role": "system",
+	        "content": "You are a skilled Python developer specializing in database management and optimization.",
+	    },
+	    {
+	        "role": "user",
+	        "content": "I'm experiencing a sorting issue in my database. Could you please provide Python code to help resolve this problem?",
+	    },
+	]
+
+	prompt = tokenizer.apply_chat_template(
+	    messages, tokenize=False, add_generation_prompt=True
+	)
+
+	print(prompt)
+	exit()
+
+	x = tokenizer(
 			batch["prompts"],
 			#padding="max_length",
-			truncation=True,
-			max_length=256,
+			truncation=True, max_length=256, return_tensors="pt",
 	)
+
+	print(x)
+	return x
 
 
 class prm800kRewardDataset(Dataset):
@@ -90,7 +109,7 @@ class prm800kRewardDataset(Dataset):
 
 if __name__=="__main__":
 	#print( grader.grade_answer("Right. So the integer $n$ that we're looking for is $-48$.\n\n# Answer\n\n-48", "-48") )	
-	data = prm800k_preprocess()[-500:] #500000
+	data = prm800k_preprocess()[-700:] #500000
 	#dict of prompts, labels
 	dataset = Dataset.from_dict(  data_to_prompt(data) )
 	#dataset = prm800kRewardDataset(data)
@@ -98,8 +117,9 @@ if __name__=="__main__":
 	train_dataset = dataset["train"]
 	test_dataset = dataset["test"]
 	
-	model_id =  "meta-llama/Llama-3.2-1B-Instruct" #"meta-llama/Llama-3.2-1B"
+	model_id =  "meta-llama/Llama-3.2-1B-Instruct"  #"meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8" #"meta-llama/Llama-3.2-1B"
 	tokenizer = AutoTokenizer.from_pretrained(model_id)
+	
 	train_dataset = train_dataset.map(reward_preprocess, batched=True)
 	test_dataset = test_dataset.map(reward_preprocess, batched=True)	
 	
@@ -109,32 +129,32 @@ if __name__=="__main__":
 
 	# Start training    
 	training_args = TrainingArguments(
-			output_dir='./model_temp',
-			num_train_epochs=30,
-			per_device_train_batch_size=1, #16,
-			gradient_accumulation_steps=1,
-			#gradient_checkpointing=True, - slows down the training
-			learning_rate=1e-6,
-			logging_steps=20,
-			save_steps=500,
-			save_total_limit=3,
-			load_best_model_at_end=True,
-			evaluation_strategy="steps",
-			eval_steps=50, #500
-			per_device_eval_batch_size=1,
-			#metric_for_best_model='eval_loss',
-			#remove_unused_columns=False,
-			#logging_dir="./logs/",
-			#report_to="tensorboard",
-			#weight_decay=0.01,
+		output_dir='./model_temp',
+		num_train_epochs=30,
+		per_device_train_batch_size=1, #16,
+		gradient_accumulation_steps=1,
+		#gradient_checkpointing=True, - slows down the training
+		learning_rate=1e-6,
+		logging_steps=20,
+		save_steps=500,
+		save_total_limit=3,
+		load_best_model_at_end=True,
+		evaluation_strategy="steps",
+		eval_steps=50, #500
+		per_device_eval_batch_size=1,
+		#metric_for_best_model='eval_loss',
+		#remove_unused_columns=False,
+		#logging_dir="./logs/",
+		#report_to="tensorboard",
+		#weight_decay=0.01,
 	)
 
 	trainer = Trainer(
-			model=model,
-			#data_collator=data_collator,
-			args=training_args,
-			train_dataset=train_dataset,
-			eval_dataset=test_dataset    
+		model=model,
+		#data_collator=data_collator,
+		args=training_args,
+		train_dataset=train_dataset,
+		eval_dataset=test_dataset    
 	)
 	
 	trainer.train()
