@@ -1,8 +1,10 @@
 __pycache__
 config.py
+rag/config.py
 models/
 model_temp
 temp
 transformers1
 prm800k
 logs
+rag/.ipynb_checkpoints
