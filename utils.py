@@ -40,3 +40,13 @@ def remove_multiple_spaces(text):
 
 def cosine_similarity(v1, v2):
   return 1 - spatial.distance.cosine(v1, v2)
+
+def pickle_save(path, obj):
+    with open(path, "wb") as file: pickle.dump(obj, file)
+
+def pickle_load(path):
+    with open(path, "rb") as file: 
+        obj = pickle.load(file)
+        return obj
+
+        
