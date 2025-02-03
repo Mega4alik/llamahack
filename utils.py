@@ -7,6 +7,7 @@ import codecs
 import io
 import re
 import json
+import pickle
 import numpy as np
 from scipy import spatial
 from openai import OpenAI
@@ -49,4 +50,3 @@ def pickle_load(path):
         obj = pickle.load(file)
         return obj
 
-        

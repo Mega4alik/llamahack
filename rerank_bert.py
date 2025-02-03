@@ -4,7 +4,6 @@ import json
 import os
 import random
 #import multiprocessing
-import pickle
 import torch
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
@@ -14,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModel
 from utils import file_get_contents, file_put_contents, pickle_load, pickle_save
 
+G_CHUNK_SIZE = 200
 
 def split_article_with_fact(article_text, fact_text, chunk_size=200):	
 	def _chunk_words(words, chunk_size):	    
@@ -84,13 +84,13 @@ def multihop_qa_prepare_data():
 			urls.append(ev["url"])
 			fact = ev["fact"]
 			article_text = next((x for x in articles if x["url"] == ev["url"]), None)['body']
-			chunks, labels = split_article_with_fact(article_text, fact, chunk_size=200), []
+			chunks, labels = split_article_with_fact(article_text, fact, chunk_size=G_CHUNK_SIZE), []
 			chunks_list.append(chunks)
 			chunks_n+=len(chunks)
 			# double check
 			found = False
 			for chunk in chunks:
-				if fact in chunk: 
+				if fact in chunk:
 					found = True
 					labels.append(1)
 				else:
@@ -102,7 +102,7 @@ def multihop_qa_prepare_data():
 		articles2 = [x for x in articles if x["url"] not in urls]
 		random.shuffle(articles2)
 		for article in articles2:
-			chunks = split_article_with_fact(article["body"], None, chunk_size=200)
+			chunks = split_article_with_fact(article["body"], None, chunk_size=G_CHUNK_SIZE)
 			if chunks_n + len(chunks) > 511: break
 			chunks_list.append(chunks)
 			labels_list.append([0] * len(chunks))			
@@ -245,13 +245,15 @@ class OwnTrainer(Trainer):
 			# Disable gradient calculation
 			with torch.no_grad():
 				pred = self.model.generate(inputs['input_values']) #B,S
+				"""
 				if preds is None:
 					preds = pred
 					labels = inputs["labels"]
 				else:
 					preds+=pred
 					labels+=inputs["labels"]
-		return compute_metrics({"predictions":preds, "labels":labels})
+				"""
+			return compute_metrics({"predictions":pred, "labels":inputs['labels']})	
 			
 	def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False): #called from Trainer._save_checkpoint	
 		save_directory, model = output_dir, self.model
@@ -279,7 +281,7 @@ def compute_metrics(x):
 		probs, labels = batch_preds[i], batch_labels[i]
 		top_indices = torch.topk(probs, 10).indices.detach().tolist()
 		labels_ones = torch.nonzero(labels == 1).squeeze().detach().tolist()
-		for lidx in labels_one:
+		for lidx in labels_ones:
 			if lidx in top_indices: correct+=1
 			n+=1
 		print(labels_ones, top_indices, correct, n)
@@ -303,13 +305,11 @@ else: #Train
 	dataset = multihop_qa_prepare_data()
 	make_embeddings(dataset)
 	d = dataset_to_dict(dataset)
+	del dataset
 	mydataset = Dataset.from_dict(d)
-	mydataset = mydataset.train_test_split(test_size=0.01)
-	#mydataset = mydataset.filter(lambda x: x["len"] <= 30 * 16000, num_proc=2) #less than 30 secs
-	torch.save(mydataset, "./temp/rerank_dataset.pt")
-	mydataset = torch.load("./temp/rerank_dataset.pt")
-	train_dataset = mydataset["train"]
-	val_dataset = mydataset["test"]
+	del d
+	mydataset = mydataset.train_test_split(test_size=0.01, seed=42)
+	train_dataset, val_dataset = mydataset["train"], mydataset["test"]
 	#endOf prepare data
 	
 	mymodel = MyModel()	
@@ -322,10 +322,11 @@ else: #Train
 	  gradient_accumulation_steps=1, #update each 2 * batch_size
 	  #fp16=True,
 	  evaluation_strategy="steps",
-	  num_train_epochs=50,
-	  logging_steps=100,
+	  num_train_epochs=100,
+	  logging_steps=50,
 	  save_steps=500,
 	  eval_steps=500,
+	  per_device_eval_batch_size=23,
 	  learning_rate=1e-5,
 	  dataloader_num_workers=4,
 	  weight_decay=0.005,
@@ -347,5 +348,5 @@ else: #Train
 		eval_dataset=val_dataset,
 		#tokenizer=processor.feature_extractor,
 	)
-	trainer.train()
+	trainer.train("./model_temp/checkpoint-1000")
 
