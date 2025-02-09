@@ -14,6 +14,7 @@ from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModel
 from utils import file_get_contents, file_put_contents, pickle_load, pickle_save
 
 G_CHUNK_SIZE = 200
+COHERE_EVAL = True #whether we are evaluationg cohere rerank now
 
 def split_article_with_fact(article_text, fact_text, chunk_size=200):	
 	def _chunk_words(words, chunk_size):	    
@@ -84,7 +85,7 @@ def multihop_qa_prepare_data():
 			urls.append(ev["url"])
 			fact = ev["fact"]
 			article_text = next((x for x in articles if x["url"] == ev["url"]), None)['body']
-			chunks, labels = split_article_with_fact(article_text, fact, chunk_size=G_CHUNK_SIZE), []
+			chunks, labels = split_article_with_fact(article_text, fact, chunk_size=G_CHUNK_SIZE), []			
 			chunks_list.append(chunks)
 			chunks_n+=len(chunks)
 			# double check
@@ -105,7 +106,7 @@ def multihop_qa_prepare_data():
 			chunks = split_article_with_fact(article["body"], None, chunk_size=G_CHUNK_SIZE)
 			if chunks_n + len(chunks) > 511: break
 			chunks_list.append(chunks)
-			labels_list.append([0] * len(chunks))			
+			labels_list.append([0] * len(chunks))
 			chunks_n+=len(chunks)			
 		#./endOf add more chunks
 
@@ -166,13 +167,13 @@ class DataCollator:
 		urls_list = [feature["urls_list"] for feature in features] #b,[url]		
 		labels_list = [feature["labels_list"] for feature in features] #b,[ [label1, label2], [..] ]
 		"""
-		batch = {"input_values": [], "labels":[]}
+		batch = {"input_values": [], "labels":[], "chunks_list":[], "labels_list":[], "question":[]}
 		for x in features: #for each batch
 			question, labels_list, chunks_list = x["question"], x["labels_list"], x["chunks_list"]
 			question_emb, chunks_emb = emb_cache[hashf(question)], []
 			for chunks in chunks_list:
 				chunks_emb.append( [emb_cache[hashf(chunk)] for chunk in chunks] )
-			chunks_emb, labels_list = self.shuffle_lists(chunks_emb, labels_list)
+			if not COHERE_EVAL: chunks_emb, labels_list = self.shuffle_lists(chunks_emb, labels_list)
 			input_values, labels = [question_emb], [0] #input value: list of embeddings(list), labels: list of 0/1
 			for i, embs in enumerate(chunks_emb):
 				for emb in embs: input_values.append(emb)
@@ -181,6 +182,10 @@ class DataCollator:
 			input_values, labels = torch.tensor(input_values), torch.tensor(labels) #, dtype=torch.int32
 			batch["input_values"].append(input_values)
 			batch["labels"].append(labels)
+			if COHERE_EVAL:
+				batch["chunks_list"].append(chunks_list) #temp for cohere
+				batch["labels_list"].append(labels_list) #temp for cohere
+				batch["question"].append(question) #temp for cohere
 
 		batch["input_values"] = pad_sequence(batch["input_values"], batch_first=True, padding_value=0) #B,S,C
 		batch["labels"] = pad_sequence(batch["labels"], batch_first=True, padding_value=0) #B,S -100
@@ -240,21 +245,12 @@ class OwnTrainer(Trainer):
 		preds, lables = None, None
 		eval_dataloader = self.get_eval_dataloader(eval_dataset)
 		for step, inputs in enumerate(eval_dataloader):
-			# Move inputs to the appropriate device
-			#inputs = {k: v.to(self.args.device) for k, v in inputs.items()}
-			# Disable gradient calculation
+			if COHERE_EVAL: return cohere_rerank(inputs["question"], inputs["chunks_list"], inputs["labels_list"])
 			with torch.no_grad():
-				pred = self.model.generate(inputs['input_values']) #B,S
-				"""
-				if preds is None:
-					preds = pred
-					labels = inputs["labels"]
-				else:
-					preds+=pred
-					labels+=inputs["labels"]
-				"""
+				pred = self.model.generate(inputs['input_values']) #B,S				
 			return compute_metrics({"predictions":pred, "labels":inputs['labels']})	
 			
+
 	def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False): #called from Trainer._save_checkpoint	
 		save_directory, model = output_dir, self.model
 		os.makedirs(save_directory, exist_ok=True)		
@@ -288,7 +284,29 @@ def compute_metrics(x):
 	return {"eval_accuracy": (correct / n) }
 
 
-#====================================================================
+#==== cohere ========
+if COHERE_EVAL:
+	from config import COHERE_API_KEY
+	import cohere
+	co = cohere.ClientV2(COHERE_API_KEY)
+	def cohere_rerank(b_question, b_chunks_list, b_labels_list):		
+		correct, n = 0, 0
+		for i, chunks_list in enumerate(b_chunks_list):
+			question, labels_list, documents, labels  = b_question[i], b_labels_list[i], [], []
+			for chunks in chunks_list:
+				for chunk in chunks: documents.append(chunk)
+			for a in labels_list: labels+=a
+			print("docs, labels lengths:", len(documents), len(labels))
+			labels_ones = torch.nonzero(torch.tensor(labels) == 1).squeeze().detach().tolist()
+			documents_reranked = co.rerank(model="rerank-v3.5", query=question, documents=documents, top_n=10)
+			top_indices = [r.index for r in documents_reranked.results]
+			for lidx in labels_ones:
+				if lidx in top_indices: correct+=1
+				n+=1
+			print(labels_ones, top_indices, correct, n)
+		return {"eval_accuracy": (correct / n) }
+#==== endOf cohere ========	
+
 
 ###################### __main__ ###########################
 gpu, device = True, torch.device("cuda")
@@ -312,7 +330,7 @@ else: #Train
 	train_dataset, val_dataset = mydataset["train"], mydataset["test"]
 	#endOf prepare data
 	
-	mymodel = MyModel()	
+	mymodel = MyModel()
 	bce_loss = nn.BCELoss()
 	data_collator = DataCollator()
 	training_args = TrainingArguments(
@@ -348,5 +366,7 @@ else: #Train
 		eval_dataset=val_dataset,
 		#tokenizer=processor.feature_extractor,
 	)
-	trainer.train("./model_temp/checkpoint-1000")
+	#trainer.train("./model_temp/checkpoint-1000")
+	trainer._load_from_checkpoint("./model_temp/checkpoint-11500")
+	trainer.evaluate()
 

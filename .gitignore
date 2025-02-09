@@ -4,6 +4,7 @@ rag/config.py
 models/
 model_temp
 temp
+rag/temp/
 transformers1
 prm800k
 logs
