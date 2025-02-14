@@ -119,7 +119,7 @@ def generate_questions_bychunk(chunks):
 	n = len(chunks)
 	indexes = [i for i in range(n)]
 	random.shuffle(indexes)
-	for idx in indexes[:n//5]:
+	for idx in indexes[: min(n//5, 60)]:
 		chunk  = chunks[idx]
 		text = "#"+(", ".join(chunk["keywords"]))+"\n"+chunk["content"]
 		out =  deepinfra_run(system_prompt, text) #anthropic_run(system_prompt, text)
