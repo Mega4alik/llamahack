@@ -131,8 +131,7 @@ def generate_questions_bychunk(chunks):
 
 	
 
-
-if __name__=="__main__":
+def temp():
 	st = '''
 Here are the keywords for each chunk:
 
@@ -146,4 +145,9 @@ Here are the keywords for each chunk:
 3M, patents, trademarks, research and development, inventions, intellectual property, legal protection
 '''
 	print( parse_keywords(st) )
+
+
+
+if __name__=="__main__":
+	temp()
 
