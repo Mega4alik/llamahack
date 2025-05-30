@@ -1,7 +1,4 @@
 #venv PC4 - asr3.8
-#math reasoning -- sky1 (thoughts, solution)
-#https://huggingface.co/datasets/NovaSky-AI/Sky-T1_data_17k?row=0 - main data
-#https://huggingface.co/datasets/NovaSky-AI/Sky-T1_preference_data_10k?row=0 - preference data
 import json
 import os
 import numpy as np
@@ -16,21 +13,20 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import Trainer, TrainingArguments
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaModel, LlamaForSequenceClassification #, LlamaForCausalLM
 from utils import file_get_contents, file_put_contents
-
+from webapi_data import prepare_data
 
 def messages_to_prompt(messages):
 	return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-def preprocess(batch):	
+def preprocess(batch):	#messages, label, event
 	prompts, labels = [], []
-	for i in range(len(batch["system"])):
-		assert len(batch["conversations"][i]) == 2
-		messages = [ {"role":"system",  "content": "system message"} ]
-		messages.append({"role":"user", "content":"user message"})
-		label = batch["conversations"][i][1]['value']
-		prompt = messages_to_prompt(messages)		
-		#file_put_contents("./temp/temp.txt",  prompt + "\n\n-- label:" + label)		
+	for i in range(len(batch["label"])):		
+		messages = [ {"role":"system",  "content": gp} ]
+		messages.extend(batch["messages"][i])
+		label = batch["label"][i]
+		prompt = messages_to_prompt(messages)
+		#file_put_contents("./temp/temp.txt",  prompt + "\n\n-- label:" + label);exit()
 		prompts.append(prompt)
 		labels.append(label)
 	return {"prompts":prompts, "labels":labels}
@@ -62,13 +58,13 @@ class myDataCollator:
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 
-def compute_metrics(eval_pred):		
-	pred, labels = eval_pred
-	input_ids = torch.argmax(torch.tensor(pred), dim=-1)
-	pred = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
-	labels = [[token if token != -100 else tokenizer.pad_token_id for token in seq] for seq in labels]
+
+def compute_metrics(eval_pred):	
+	generated_ids, labels = eval_pred
+	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)	
 	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-	print(pred[0]) #, "\n\n -- labels:", labels[0]
+	for p,l in zip(pred, labels):
+		print(p, " -- LABEL:", l[-10:].replace("\n",""), "  -- gen_ids:", len(generated_ids[0]), "\n#==================\n")
 	return {"accuracy": 1.0}
 
 
@@ -81,32 +77,37 @@ if __name__=="__main__":
 	tokenizer.truncation_side = 'left'
 	print("tokenizer:", tokenizer.pad_token_id, tokenizer.truncation_side)
 
-	dataset = load_dataset("NovaSky-AI/Sky-T1_data_17k")
+	d, gp = prepare_data()
+	dataset = Dataset.from_dict(d)		
 	dataset = dataset.map(preprocess, batched=True)
-	dataset = dataset["train"].train_test_split(test_size=0.0002)
+	dataset = dataset.train_test_split(test_size=0.03, seed=42)
 	train_dataset = dataset["train"]
 	test_dataset = dataset["test"]
 	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
-
+	
 	model = AutoModelForCausalLM.from_pretrained(model_id) #"./model_temp/checkpoint-6144"
 	model.config.pad_token_id = tokenizer.pad_token_id #0	
+	#looping L=16/k
+	model.config.num_hidden_layers=4
+	model.model.layers = model.model.layers[:4]
 	#device = torch.device("cuda:0")
 	#model.cuda()			
+	#print(model, model.config)	
 
 	# Start training    
 	data_collator = myDataCollator()
 	training_args = TrainingArguments(
 		output_dir='./model_temp',
-		num_train_epochs=3,
-		per_device_train_batch_size=1,#2,
-		gradient_accumulation_steps=4,
+		num_train_epochs=100,
+		per_device_train_batch_size=1,
+		gradient_accumulation_steps=1,
 		#gradient_checkpointing=True, - slows down the training
 		learning_rate=1e-6,
 		logging_steps=20,
 		save_steps=500,
-		save_total_limit=3,
+		save_total_limit=2,
 		load_best_model_at_end=True,
-		evaluation_strategy="steps",
+		eval_strategy="steps", #evaluation_strategy
 		eval_steps=500,
 		per_device_eval_batch_size=1,
 		#metric_for_best_model="eval_accuracy",
