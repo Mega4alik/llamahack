@@ -3,9 +3,10 @@ config.py
 rag/config.py
 models/
 model_temp
-temp
+#temp
 rag/temp/
 transformers1
 prm800k
+data
 logs
 rag/.ipynb_checkpoints

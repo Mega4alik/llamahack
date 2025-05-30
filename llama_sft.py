@@ -43,8 +43,8 @@ class myDataCollator:
             # Compose full text
             full = f"{prompt.strip()}{answer.strip()}<|eot_id|>"            
 
-            full_tokens = tokenizer(full, truncation=True, max_length=3500).input_ids
-            prompt_tokens = tokenizer(prompt, truncation=True, max_length=3300).input_ids
+            full_tokens = tokenizer(full, truncation=True, max_length=4000).input_ids
+            prompt_tokens = tokenizer(prompt, truncation=True, max_length=3800).input_ids
 
             label_ids = [-100] * len(prompt_tokens) + full_tokens[len(prompt_tokens):]
 
@@ -54,7 +54,7 @@ class myDataCollator:
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         labels = pad_sequence(labels, batch_first=True, padding_value=-100)
         attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
-        print(attention_mask, input_ids.shape, labels.shape, attention_mask.shape)
+        print(input_ids.shape, labels.shape, attention_mask.shape)
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 
@@ -65,6 +65,7 @@ def compute_metrics(eval_pred):
 	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 	for p,l in zip(pred, labels):
 		print(p, " -- LABEL:", l[-10:].replace("\n",""), "  -- gen_ids:", len(generated_ids[0]), "\n#==================\n")
+	wer = wer_metric.compute(predictions=pred, references=labels)
 	return {"accuracy": 1.0}
 
 
@@ -76,6 +77,7 @@ if __name__=="__main__":
 	tokenizer.pad_token_id = tokenizer.eos_token_id
 	tokenizer.truncation_side = 'left'
 	print("tokenizer:", tokenizer.pad_token_id, tokenizer.truncation_side)
+	wer = evaluate.load("wer")
 
 	d, gp = prepare_data()
 	dataset = Dataset.from_dict(d)		
@@ -87,9 +89,10 @@ if __name__=="__main__":
 	
 	model = AutoModelForCausalLM.from_pretrained(model_id) #"./model_temp/checkpoint-6144"
 	model.config.pad_token_id = tokenizer.pad_token_id #0	
-	#looping L=16/k
+	# looping L=16/k
 	model.config.num_hidden_layers=4
 	model.model.layers = model.model.layers[:4]
+	#endOf looping
 	#device = torch.device("cuda:0")
 	#model.cuda()			
 	#print(model, model.config)	
@@ -99,8 +102,8 @@ if __name__=="__main__":
 	training_args = TrainingArguments(
 		output_dir='./model_temp',
 		num_train_epochs=100,
-		per_device_train_batch_size=1,
-		gradient_accumulation_steps=1,
+		per_device_train_batch_size=2,
+		gradient_accumulation_steps=4,
 		#gradient_checkpointing=True, - slows down the training
 		learning_rate=1e-6,
 		logging_steps=20,

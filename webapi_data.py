@@ -31,7 +31,7 @@ def prepare_data():
 		cuid = x["user_id"]
 
 		if event=="BotAction": #promt: AI-action: connect-human-agent# name=patto# email=pattocarvente@gmail.com
-			ans = f"AI-action: {props["action"]}"
+			ans = "AI-action: "+props["action"]
 			for q in props["inputs"]: ans+="# "+q["name"]+"="+q["value"]
 			if len(messages)>0 and is_unique(hmap, messages): dataset.append(("landing", event, messages[-10:], ans))
 
