@@ -54,19 +54,22 @@ class myDataCollator:
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         labels = pad_sequence(labels, batch_first=True, padding_value=-100)
         attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
-        print(input_ids.shape, labels.shape, attention_mask.shape)
+        #print(input_ids.shape, labels.shape, attention_mask.shape)
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 
 
-def compute_metrics(eval_pred):	
-	generated_ids, labels = eval_pred
+def compute_metrics(p):	
+	labels = torch.tensor(p.label_ids)
+	generated_ids = np.argmax(p.predictions, axis=-1)
+	labels[labels == -100] = tokenizer.pad_token_id
+	#print("lens:", len(generated_ids), labels.shape)	
 	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)	
 	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 	for p,l in zip(pred, labels):
-		print(p, " -- LABEL:", l[-10:].replace("\n",""), "  -- gen_ids:", len(generated_ids[0]), "\n#==================\n")
+		print(p[-len(l):], " -- LABEL:", l, "\n#==================\n")
 	wer = wer_metric.compute(predictions=pred, references=labels)
-	return {"accuracy": 1.0}
+	return {"eval_accuracy": wer}
 
 
 
@@ -77,12 +80,12 @@ if __name__=="__main__":
 	tokenizer.pad_token_id = tokenizer.eos_token_id
 	tokenizer.truncation_side = 'left'
 	print("tokenizer:", tokenizer.pad_token_id, tokenizer.truncation_side)
-	wer = evaluate.load("wer")
+	wer_metric = evaluate.load("wer")
 
 	d, gp = prepare_data()
 	dataset = Dataset.from_dict(d)		
 	dataset = dataset.map(preprocess, batched=True)
-	dataset = dataset.train_test_split(test_size=0.03, seed=42)
+	dataset = dataset.train_test_split(test_size=0.001, seed=42)
 	train_dataset = dataset["train"]
 	test_dataset = dataset["test"]
 	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
@@ -101,9 +104,9 @@ if __name__=="__main__":
 	data_collator = myDataCollator()
 	training_args = TrainingArguments(
 		output_dir='./model_temp',
-		num_train_epochs=100,
+		num_train_epochs=30,
 		per_device_train_batch_size=2,
-		gradient_accumulation_steps=4,
+		gradient_accumulation_steps=2,
 		#gradient_checkpointing=True, - slows down the training
 		learning_rate=1e-6,
 		logging_steps=20,
@@ -113,7 +116,7 @@ if __name__=="__main__":
 		eval_strategy="steps", #evaluation_strategy
 		eval_steps=500,
 		per_device_eval_batch_size=1,
-		#metric_for_best_model="eval_accuracy",
+		metric_for_best_model="eval_accuracy",
 		remove_unused_columns=False,
 		#logging_dir="./logs/",
 		#report_to="tensorboard",
