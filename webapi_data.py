@@ -19,9 +19,9 @@ def dataset_to_dict(dataset):
 	return d
 
 
-def prepare_data():
+def prepare_data(mode):
 	hmap = {}
-	jj = json.loads(file_get_contents("./temp/landing_history.json"))
+	jj = json.loads(file_get_contents("./temp/test_history.json" if mode==2 else "./temp/landing_history.json"))
 	arr = sorted(jj["data"], key=lambda x: (x['user_id'], x['id']))	
 	cuid = None
 	dataset, messages = [], []
