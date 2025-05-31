@@ -35,7 +35,7 @@ def prepare_data(mode):
 			for q in props["inputs"]: ans+="# "+q["name"]+"="+q["value"]
 			if len(messages)>0 and is_unique(hmap, messages): dataset.append(("landing", event, messages[-10:], ans))
 
-			ans+="\noutputs: action_status=success\nAI"			
+			ans+="\noutputs: action_status=success"	#\nAI
 			#for q in props["inputs"]: ans+="# "+q["name"]+"="+q["value"]
 			messages.append({"role":"assistant", "content":ans})
 

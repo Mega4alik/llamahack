@@ -80,7 +80,7 @@ def compute_metrics(p):
 	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)	
 	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 	for p,l in zip(pred, labels):
-		print(p[:], " -- LABEL:", l, "\n#==================\n")
+		print(p[:-len(l)], " -- LABEL:", l, "\n#==================\n")
 	wer = wer_metric.compute(predictions=pred, references=labels)
 	return {"eval_accuracy": wer}
 
