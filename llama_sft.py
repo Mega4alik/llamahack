@@ -34,14 +34,14 @@ def preprocess(batch):	#messages, label, event
 
 class myDataCollator:
     def __call__(self, features):
-        input_ids, labels = [], []
+        input_ids, labels, prompt_lens = [], [], []
 
         for sample in features:
             prompt = sample["prompts"]
             answer = sample["labels"]
 
             # Compose full text
-            full = f"{prompt.strip()}{answer.strip()}<|eot_id|>"            
+            full = f"{prompt.strip()}{answer.strip()}<|im_end|>" #<|eot_id|>
 
             full_tokens = tokenizer(full, truncation=True, max_length=4000).input_ids
             prompt_tokens = tokenizer(prompt, truncation=True, max_length=3800).input_ids
@@ -50,12 +50,13 @@ class myDataCollator:
 
             input_ids.append(torch.tensor(full_tokens))
             labels.append(torch.tensor(label_ids))
+            prompt_lens.append(len(prompt_tokens))
 
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         labels = pad_sequence(labels, batch_first=True, padding_value=-100)
         attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
         #print(input_ids.shape, labels.shape, attention_mask.shape)
-        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
+        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask, "prompt_lens":prompt_lens}
 
 
 
@@ -66,29 +67,28 @@ class OwnTrainer(Trainer):
 		for step, inputs in enumerate(eval_dataloader):
 			input_ids, attention_mask = inputs['input_ids'], inputs['attention_mask']
 			with torch.no_grad():
-				generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, max_new_tokens=512, do_sample=False, num_beams=10)
-				generated_ids = [output_ids[len(input_ids):] for input_ids, output_ids in zip(input_ids, generated_ids)] #remove input from output				
+				generated_ids = self.model.generate(input_ids=input_ids,  max_new_tokens=50, do_sample=True, num_beams=10)
+				generated_ids = [output_ids[plen-50:] for plen, output_ids in zip(inputs["prompt_lens"], generated_ids)] #remove input from output				
 				compute_metrics({"predictions":generated_ids, "labels":inputs["labels"]})
 		return {"accuracy": 1.0}
 
 
 def compute_metrics(p):
 	labels, generated_ids = torch.tensor(p.label_ids), np.argmax(p.predictions, axis=-1)
-	#generated_ids, labels = p["predictions"], p["labels"]
-	labels[labels == -100] = tokenizer.pad_token_id
-	#print("lens:", len(generated_ids), labels.shape)	
-	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)	
-	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+	#generated_ids, labels = p["predictions"], p["labels"] #predict
+	labels[labels == -100] = tokenizer.pad_token_id	
+	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)	
+	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)	
 	for p,l in zip(pred, labels):
-		print(p[:-len(l)], " -- LABEL:", l, "\n#==================\n")
+		print(p[-len(l):], " -- LABEL:", l, "\n#==================\n")
 	wer = wer_metric.compute(predictions=pred, references=labels)
 	return {"eval_accuracy": wer}
 
 
 
 if __name__=="__main__":
-	mode = 1 #1-train, 2 - test
-	model_id = "meta-llama/Llama-3.2-1B-Instruct"  #"meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8" #"meta-llama/Llama-3.2-1B" #"Qwen/Qwen2-0.5B-Instruct"
+	mode = 1 #1-train, 2-test
+	model_id = "Qwen/Qwen2-0.5B-Instruct" #"meta-llama/Llama-3.2-1B-Instruct"  #"meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8" #"meta-llama/Llama-3.2-1B" #"Qwen/Qwen2-0.5B-Instruct"
 	tokenizer = AutoTokenizer.from_pretrained(model_id)
 	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
 	tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -104,23 +104,21 @@ if __name__=="__main__":
 	test_dataset = dataset["test"]
 	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
 	
-	model = AutoModelForCausalLM.from_pretrained("./model_temp/checkpoint-9500") #"./model_temp/checkpoint-6144"
-	model.config.pad_token_id = tokenizer.pad_token_id #0	
+	model = AutoModelForCausalLM.from_pretrained(model_id) #"./model_temp/checkpoint-6144"
+	model.config.pad_token_id = tokenizer.pad_token_id
 	# looping L=16/k
-	model.config.num_hidden_layers=4
-	model.model.layers = model.model.layers[:4]
-	#endOf looping
-	#device = torch.device("cuda:0")
-	#model.cuda()			
-	#print(model, model.config)	
+	#model.config.num_hidden_layers=4
+	#model.model.layers = model.model.layers[:4]
+	#endOf looping	
+	#print(model, model.config)
 
 	# Start training    
 	data_collator = myDataCollator()
 	training_args = TrainingArguments(
 		output_dir='./model_temp',
 		num_train_epochs=30,
-		per_device_train_batch_size=2,
-		gradient_accumulation_steps=2,
+		per_device_train_batch_size=1,
+		gradient_accumulation_steps=8,
 		#gradient_checkpointing=True, - slows down the training
 		learning_rate=1e-6,
 		logging_steps=20,
@@ -147,13 +145,7 @@ if __name__=="__main__":
 		compute_metrics=compute_metrics
 	)
 	
-	if mode==1: trainer.train("./model_temp/checkpoint-9500")
+	if mode==1: trainer.train()
 	else: 
-		#print( trainer.evaluate() )
-		trainer.generate_kwargs = {
-		    "max_new_tokens": 1000, "temperature":1.2,
-		    "do_sample": True, "num_beams":100, "top_k":10, "repetition_penalty":1.2
-		}
-		predictions = trainer.predict(test_dataset)
-		#print(predictions)
-
+		#print( trainer.evaluate() )		
+		predictions = trainer.predict(test_dataset)		
