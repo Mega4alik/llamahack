@@ -48,7 +48,7 @@ class myDataCollator:
 
             label_ids = [-100] * len(prompt_tokens) + full_tokens[len(prompt_tokens):]
 
-            input_ids.append(torch.tensor(full_tokens))
+            input_ids.append(torch.tensor(full_tokens if mode==1 else prompt_tokens))
             labels.append(torch.tensor(label_ids))
             prompt_lens.append(len(prompt_tokens))
 
@@ -68,26 +68,28 @@ class OwnTrainer(Trainer):
 			input_ids, attention_mask = inputs['input_ids'], inputs['attention_mask']
 			with torch.no_grad():
 				generated_ids = self.model.generate(input_ids=input_ids,  max_new_tokens=50, do_sample=True, num_beams=10)
-				generated_ids = [output_ids[plen-50:] for plen, output_ids in zip(inputs["prompt_lens"], generated_ids)] #remove input from output				
+				generated_ids = [output_ids[plen-50:] for plen, output_ids in zip(inputs["prompt_lens"], generated_ids)] #remove input from output
 				compute_metrics({"predictions":generated_ids, "labels":inputs["labels"]})
 		return {"accuracy": 1.0}
 
 
 def compute_metrics(p):
-	labels, generated_ids = torch.tensor(p.label_ids), np.argmax(p.predictions, axis=-1)
-	#generated_ids, labels = p["predictions"], p["labels"] #predict
+	if mode==1:
+		labels, generated_ids = torch.tensor(p.label_ids), np.argmax(p.predictions, axis=-1)
+	else:
+		generated_ids, labels = p["predictions"], p["labels"] #predict, eval
 	labels[labels == -100] = tokenizer.pad_token_id	
 	pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)	
 	labels = tokenizer.batch_decode(labels, skip_special_tokens=True)	
 	for p,l in zip(pred, labels):
-		print(p[-len(l):], " -- LABEL:", l, "\n#==================\n")
+		print(p[:], " -- LABEL:", l, "\n#==================\n")
 	wer = wer_metric.compute(predictions=pred, references=labels)
 	return {"eval_accuracy": wer}
 
 
 
 if __name__=="__main__":
-	mode = 1 #1-train, 2-test
+	mode = 2 #1-train, 2-test
 	model_id = "Qwen/Qwen2-0.5B-Instruct" #"meta-llama/Llama-3.2-1B-Instruct"  #"meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8" #"meta-llama/Llama-3.2-1B" #"Qwen/Qwen2-0.5B-Instruct"
 	tokenizer = AutoTokenizer.from_pretrained(model_id)
 	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
@@ -104,7 +106,7 @@ if __name__=="__main__":
 	test_dataset = dataset["test"]
 	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
 	
-	model = AutoModelForCausalLM.from_pretrained(model_id) #"./model_temp/checkpoint-6144"
+	model = AutoModelForCausalLM.from_pretrained(model_id if mode==1 else "./model_temp/checkpoint-19000")
 	model.config.pad_token_id = tokenizer.pad_token_id
 	# looping L=16/k
 	#model.config.num_hidden_layers=4
@@ -116,7 +118,7 @@ if __name__=="__main__":
 	data_collator = myDataCollator()
 	training_args = TrainingArguments(
 		output_dir='./model_temp',
-		num_train_epochs=30,
+		num_train_epochs=100,
 		per_device_train_batch_size=1,
 		gradient_accumulation_steps=8,
 		#gradient_checkpointing=True, - slows down the training
@@ -128,7 +130,7 @@ if __name__=="__main__":
 		eval_strategy="steps", #evaluation_strategy
 		eval_steps=500,
 		per_device_eval_batch_size=1,
-		metric_for_best_model="eval_accuracy",
+		metric_for_best_model="eval_loss",
 		greater_is_better=False,
 		remove_unused_columns=False,
 		#logging_dir="./logs/",
@@ -142,10 +144,10 @@ if __name__=="__main__":
 		args=training_args,
 		train_dataset=train_dataset,
 		eval_dataset=test_dataset,
-		compute_metrics=compute_metrics
+		#compute_metrics=compute_metrics
 	)
 	
-	if mode==1: trainer.train()
+	if mode==1: trainer.train("./model_temp/checkpoint-17070")
 	else: 
 		#print( trainer.evaluate() )		
-		predictions = trainer.predict(test_dataset)		
+		predictions = trainer.predict(test_dataset)
