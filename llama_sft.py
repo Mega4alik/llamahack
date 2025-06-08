@@ -41,7 +41,7 @@ class myDataCollator:
             answer = sample["labels"]
 
             # Compose full text
-            full = f"{prompt.strip()}{answer.strip()}<|im_end|>" #<|eot_id|>
+            full = f"{prompt}{answer}<|im_end|>" #<|eot_id|>
 
             full_tokens = tokenizer(full, truncation=True, max_length=4000).input_ids
             prompt_tokens = tokenizer(prompt, truncation=True, max_length=3800).input_ids
