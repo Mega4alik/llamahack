@@ -1,4 +1,5 @@
-#venv PC4 - asr3.8
+# venv PC4 - asr3.8, US1 - asr3.12
+# landing1(ch-19k) was trained on Qwen2 instruct without any model modifications
 import json
 import os
 import numpy as np
@@ -17,7 +18,6 @@ from webapi_data import prepare_data
 
 def messages_to_prompt(messages):
 	return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
 
 def preprocess(batch):	#messages, label, event
 	prompts, labels = [], []
@@ -90,7 +90,7 @@ def compute_metrics(p):
 
 if __name__=="__main__":
 	mode = 2 #1-train, 2-test
-	model_id = "Qwen/Qwen2-0.5B-Instruct" #"meta-llama/Llama-3.2-1B-Instruct"  #"meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8" #"meta-llama/Llama-3.2-1B" #"Qwen/Qwen2-0.5B-Instruct"
+	model_id = "Qwen/Qwen2-0.5B-Instruct"
 	tokenizer = AutoTokenizer.from_pretrained(model_id)
 	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
 	tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -99,7 +99,7 @@ if __name__=="__main__":
 	wer_metric = evaluate.load("wer")
 
 	d, gp = prepare_data(mode)
-	dataset = Dataset.from_dict(d)		
+	dataset = Dataset.from_dict(d)
 	dataset = dataset.map(preprocess, batched=True)
 	dataset = dataset.train_test_split(test_size=0.001 if mode==1 else 12, seed=42)
 	train_dataset = dataset["train"]

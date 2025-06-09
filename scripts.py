@@ -23,26 +23,21 @@ def hf_inference():
 
 
 def hf_push_to_hub():
-    from huggingface_hub import HfApi, HfFolder, Repository
-
+    from huggingface_hub import HfApi, HfFolder, Repository, create_repo
     # Set repo name (your-username/my-model-name)
     repo_name = "AnuarSh/landing1"
 
-    # Create the repo (or skip if already created)
-    from huggingface_hub import create_repo
-    create_repo(repo_name, private=False)
-
-    # Clone the repo locally
-    from huggingface_hub import snapshot_download
-    from huggingface_hub import Repository
-
-    repo = Repository(local_dir="./model_temp/checkpoint-19000", clone_from=repo_name)
-
-    # Push your model directory
-    repo.push_to_hub()
-
+    # Create the repo (or skip if already created)    
+    #create_repo(repo_name, private=False)
+    
+    api = HfApi()
+    api.upload_folder(
+        folder_path="./model_temp/landing_qwen2_checkpoint-19000",
+        repo_id=repo_name,
+        repo_type="model",
+    )
 
 
 if __name__=="__main__":
-    #hf_push_to_hub()
-    pass
+    hf_push_to_hub()
+    
