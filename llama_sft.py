@@ -88,6 +88,18 @@ def compute_metrics(p):
 
 
 
+def test_on_modal(dataset): #modal.com
+	import requests
+	for i, x in enumerate(dataset):
+		prompt, label = x["prompts"], x["labels"]
+		url = "https://anuarsh--hf-transformer-model-web-inference.modal.run"
+		headers = {"Content-Type": "application/json"}
+		data = {"prompt": prompt}
+		response = requests.post(url, json=data, headers=headers)
+		gen_text = response.json()
+		print(gen_text[len(prompt):], "-- l:", label, "\n==============\n\n")
+
+
 if __name__=="__main__":
 	mode = 2 #1-train, 2-test
 	model_id = "Qwen/Qwen2-0.5B-Instruct"
@@ -104,7 +116,8 @@ if __name__=="__main__":
 	dataset = dataset.train_test_split(test_size=0.001 if mode==1 else 12, seed=42)
 	train_dataset = dataset["train"]
 	test_dataset = dataset["test"]
-	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
+	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))	
+	test_on_modal(test_dataset); exit() #test on cloud inference
 	
 	model = AutoModelForCausalLM.from_pretrained(model_id if mode==1 else "./model_temp/checkpoint-19000")
 	model.config.pad_token_id = tokenizer.pad_token_id
