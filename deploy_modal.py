@@ -178,24 +178,24 @@ def run_inference(prompt: str):
 class ModelRunner:
     @modal.enter()
     def setup(self):
-        model_name = "Qwen/Qwen2-0.5B-Instruct" #"AnuarSh/landing1"
+        model_name =  "AnuarSh/landing1" #"Qwen/Qwen2-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct")
         self.model = AutoModelForCausalLM.from_pretrained(model_name).to("cuda")
 
     @modal.method()
     def run(self, prompt: str):
-        inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
-        outputs = self.model.generate(**inputs, max_new_tokens=50)
+        inputs = self.tokenizer(prompt, truncation=True, max_length=4000, return_tensors="pt").to("cuda")
+        outputs = self.model.generate(**inputs, max_new_tokens=50, do_sample=True, num_beams=10)
         return self.tokenizer.decode(outputs[0], skip_special_tokens=False)
 
     @modal.method()
     def on_user_message(self, messages):
         messages = [{"role":"system", "content":gp}] + messages
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
-        outputs = self.model.generate(**inputs, max_new_tokens=50)
+        inputs = self.tokenizer(prompt, truncation=True, max_length=4000, return_tensors="pt").to("cuda")
+        outputs = self.model.generate(**inputs, max_new_tokens=128, do_sample=True, num_beams=10)
         answer = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
-        answer = answer[len(prompt):]
+        answer = answer[len(prompt):].replace("<|im_end|>","").strip()
         return { "messages":[{"content": answer}] }
 
 
@@ -209,5 +209,3 @@ def web_inference(req: Dict):
     else:
         messages, user_id = req["messages"], req["user_id"]
         return ModelRunner().on_user_message.remote(messages)
-
-

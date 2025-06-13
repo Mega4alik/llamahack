@@ -67,7 +67,7 @@ class OwnTrainer(Trainer):
 		for step, inputs in enumerate(eval_dataloader):
 			input_ids, attention_mask = inputs['input_ids'], inputs['attention_mask']
 			with torch.no_grad():
-				generated_ids = self.model.generate(input_ids=input_ids,  max_new_tokens=50, do_sample=True, num_beams=10)
+				generated_ids = self.model.generate(input_ids=input_ids, max_new_tokens=50, do_sample=True, num_beams=10)
 				generated_ids = [output_ids[plen-50:] for plen, output_ids in zip(inputs["prompt_lens"], generated_ids)] #remove input from output
 				compute_metrics({"predictions":generated_ids, "labels":inputs["labels"]})
 		return {"accuracy": 1.0}
