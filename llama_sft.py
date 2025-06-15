@@ -101,7 +101,7 @@ def test_on_modal(dataset): #modal.com
 
 
 if __name__=="__main__":
-	mode = 2 #1-train, 2-test
+	mode = 2 #1-train, 2-test, 3-test on cloud
 	model_id = "Qwen/Qwen2-0.5B-Instruct"
 	tokenizer = AutoTokenizer.from_pretrained(model_id)
 	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
@@ -113,13 +113,13 @@ if __name__=="__main__":
 	d, gp = prepare_data(mode)
 	dataset = Dataset.from_dict(d)
 	dataset = dataset.map(preprocess, batched=True)
-	dataset = dataset.train_test_split(test_size=0.001 if mode==1 else 12, seed=42)
+	dataset = dataset.train_test_split(test_size=0.003																																																			 if mode==1 else 12, seed=42)
 	train_dataset = dataset["train"]
 	test_dataset = dataset["test"]
-	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))	
-	test_on_modal(test_dataset); exit() #test on cloud inference
+	print("Dataset train, test sizes:",  len(train_dataset), len(test_dataset))
+	if mode==3: test_on_modal(test_dataset); exit() #test on cloud inference
 	
-	model = AutoModelForCausalLM.from_pretrained(model_id if mode==1 else "./model_temp/checkpoint-19000")
+	model = AutoModelForCausalLM.from_pretrained(model_id if mode==1 else "./model_temp/checkpoint-31000")
 	model.config.pad_token_id = tokenizer.pad_token_id
 	# looping L=16/k
 	#model.config.num_hidden_layers=4
@@ -160,7 +160,7 @@ if __name__=="__main__":
 		#compute_metrics=compute_metrics
 	)
 	
-	if mode==1: trainer.train("./model_temp/checkpoint-17070")
+	if mode==1: trainer.train("./model_temp/checkpoint-22500")
 	else: 
 		#print( trainer.evaluate() )		
 		predictions = trainer.predict(test_dataset)

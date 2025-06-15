@@ -32,7 +32,7 @@ def hf_push_to_hub():
     
     api = HfApi()
     api.upload_folder(
-        folder_path="./model_temp/landing_qwen2_checkpoint-19000",
+        folder_path="./model_temp/checkpoint-24000",
         repo_id=repo_name,
         repo_type="model",
     )
