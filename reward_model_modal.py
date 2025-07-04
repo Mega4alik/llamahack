@@ -146,10 +146,12 @@ AI: I'm not sure. Would like to switch to a human agent? BUTTONS= talk to agent#
 """
 
 
-class rewardModel(Qwen2ForCausalLM):	
+class rewardModel(Qwen2ForCausalLM):
 	def process_gp(self):
-		messages = [{"role":"system", "content":gp}]
-		prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)		
+		#messages = [{"role":"system", "content":gp}]
+		#prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+		prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"+gp+"<|eot_id|>" #llama3
+		#print(prompt); exit()
 		inputs = tokenizer(prompt, truncation=True, max_length=400, return_tensors="pt").to(device) #NEED TO BE LARGER
 		outputs = super().forward(**inputs, use_cache=True, output_hidden_states=True)
 		self.past_key_values = outputs.past_key_values
@@ -188,7 +190,7 @@ class rewardModel(Qwen2ForCausalLM):
 
 if __name__ == "__main__":
 	device = torch.device("cuda")
-	tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct")
+	tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct") #"Qwen/Qwen2-0.5B-Instruct"
 	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
 	tokenizer.pad_token_id = tokenizer.eos_token_id
 	tokenizer.truncation_side = 'left'
@@ -201,9 +203,8 @@ if __name__ == "__main__":
 	# sample
 	messages = [{"role":"user", "content":"I need pricing"}, {"role":"assistant", "content":"We charge based on usage"}]
 	messages[-1]["content"]+="\nTask: rate this answer by correcteness and helpfulness on scale from 1 to 10, where 1 is bad and 5 is good answer. Ex, 4"
-	prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)[58:] #this varies from depending on model type
+	prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)[134:] #qwen2-57, llama3-
 	#print("---"+prompt+"---");exit()
 	input_ids = tokenizer([prompt], return_tensors="pt").input_ids.to(device)
-	gen_ids = model.generate(input_ids, max_new_tokens=10)	
+	gen_ids = model.generate(input_ids, max_new_tokens=10)
 	print(tokenizer.decode(gen_ids[0], skip_special_tokens=True))
-
