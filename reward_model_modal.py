@@ -1,9 +1,14 @@
 # Reward function for landing RL training that scores assistant answer from 1 to 5
-import copy
+# modal deploy <name>.py
+# curl -X POST https://anuarsh--rl-reward-web-inference.modal.run -H "Content-Type: application/json" -d '{"user_id":1, "messages":[{"role":"user","content":"hi"}, {"role":"assistant","content":"hi, how may I help you?"}]}'
+
+import json, os, copy
+from typing import Dict
 import torch
 from torch import nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers import AutoTokenizer, AutoModelForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM
+import modal
+
 
 gp = """
 Intro:
@@ -146,20 +151,23 @@ AI: I'm not sure. Would like to switch to a human agent? BUTTONS= talk to agent#
 """
 
 
-class rewardModel(Qwen2ForCausalLM):
-	def process_gp(self):
-		#messages = [{"role":"system", "content":gp}]
-		#prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+class rewardModel(LlamaForCausalLM):
+	@torch.inference_mode()
+	def process_gp(self, tokenizer):
+		#messages = [{"role":"system", "content":gp}]; prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
 		prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"+gp+"<|eot_id|>" #llama3
 		#print(prompt); exit()
-		inputs = tokenizer(prompt, truncation=True, max_length=400, return_tensors="pt").to(device) #NEED TO BE LARGER
+		inputs = tokenizer(prompt, truncation=True, max_length=4000, return_tensors="pt").to("cuda") #NEED TO BE LARGER
 		outputs = super().forward(**inputs, use_cache=True, output_hidden_states=True)
 		self.past_key_values = outputs.past_key_values
-	
+
+
+	@torch.inference_mode()
 	def generate(self, input_ids=None, max_new_tokens=32, **kwargs): #B=1, S
+		cached_kv = copy.deepcopy(self.past_key_values)
 		outputs = super().forward( #attention_mask not needed unless B=1
 			input_ids=input_ids,
-			past_key_values=self.past_key_values,
+			past_key_values=cached_kv,
 			use_cache=True,
 			output_hidden_states=True
 		)
@@ -179,19 +187,59 @@ class rewardModel(Qwen2ForCausalLM):
 			next_token = torch.argmax(logits, dim=-1, keepdim=True)
 			generated.append(next_token)
 			cur_token = next_token
-			if next_token.item() == tokenizer.eos_token_id: break
+			if next_token.item() == 128009: break #tokenizer.eos_token_id llama3:128009
 
 		# Decode final output
 		gen_ids = torch.cat(generated, dim=-1)
 		return gen_ids
 
 
-#===================================
+#=============== modal.com ====================
+app = modal.App("rl-reward")
 
+image = modal.Image.debian_slim().pip_install(
+	"torch", "transformers", "accelerate", "fastapi[standard]"
+)
+
+@app.cls(gpu="A100", image=image, secrets=[modal.Secret.from_name("hf-token")], keep_warm=1)
+class ModelRunner:
+	@modal.enter()
+	def setup(self):
+		model_id = "meta-llama/Llama-3.2-3B-Instruct"
+		tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=os.getenv("US1"))
+		tokenizer.pad_token, tokenizer.pad_token_id = tokenizer.eos_token, tokenizer.eos_token_id
+		model = rewardModel.from_pretrained(model_id, device_map="auto", torch_dtype=torch.float16, token=os.getenv("US1"))
+		model.eval()
+		model.cuda()
+		model.process_gp(tokenizer)
+		self.tokenizer, self.model = tokenizer, model    		
+
+	@modal.method()
+	def score_answer(self, messages): #must not include system message
+		#messages[-1]["content"]+="\nTask: rate this answer by correcteness and helpfulness on scale from 1 to 5, where 1 is bad and 5 is good answer. Ex, 4" #v1
+		#messages.append({"role": "user", "content": "On a scale from 1 to 5, how correct and helpful was the assistant’s last response based on history of conversation? Only return a single number."}) #v2
+		prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)[134:] #qwen2-57, llama3-134
+		#print("---"+prompt+"---")
+		input_ids = self.tokenizer([prompt], return_tensors="pt").input_ids.to("cuda")
+		gen_ids = self.model.generate(input_ids, max_new_tokens=5).detach().cpu()
+		del input_ids
+		#torch.cuda.empty_cache() #?
+		return self.tokenizer.decode(gen_ids[0], skip_special_tokens=True)
+
+		
+@app.function(image=image)
+@modal.web_endpoint(method="POST")
+def web_inference(req: Dict):
+	messages = req["messages"]
+	return ModelRunner().score_answer.remote(messages)
+
+#=============== ./endOf modal.com ====================
+
+"""
 if __name__ == "__main__":
 	device = torch.device("cuda")
 	tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-3B-Instruct") #"Qwen/Qwen2-0.5B-Instruct"
-	tokenizer.pad_token = tokenizer.eos_token #'!' #'<|finetune_right_pad_id|>' 
+	tokenizer.pad_token = tokenizer.eos_token
 	tokenizer.pad_token_id = tokenizer.eos_token_id
 	tokenizer.truncation_side = 'left'
 
@@ -208,3 +256,4 @@ if __name__ == "__main__":
 	input_ids = tokenizer([prompt], return_tensors="pt").input_ids.to(device)
 	gen_ids = model.generate(input_ids, max_new_tokens=10)
 	print(tokenizer.decode(gen_ids[0], skip_special_tokens=True))
+"""
