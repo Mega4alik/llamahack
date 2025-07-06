@@ -201,7 +201,7 @@ image = modal.Image.debian_slim().pip_install(
 	"torch", "transformers", "accelerate", "fastapi[standard]"
 )
 
-@app.cls(gpu="A100", image=image, secrets=[modal.Secret.from_name("hf-token")], keep_warm=1)
+@app.cls(gpu="A100", image=image, secrets=[modal.Secret.from_name("hf-token")]) #, keep_warm=1
 class ModelRunner:
 	@modal.enter()
 	def setup(self):
